@@ -18,7 +18,6 @@ app.add_middleware(
 )
 
 
-# ── WebSocket manager ─────────────────────────────────────────────
 class ConnectionManager:
     def __init__(self):
         self.active_connections: list[WebSocket] = []
@@ -47,9 +46,10 @@ manager = ConnectionManager()
 active_incidents: dict[str, Incident] = {}
 fleet_units:      dict[str, Unit]     = {}
 fire_stations:    dict[str, Station]  = {}
+# Store calc steps per incident for the AI panel
+calc_log:         dict[str, list]     = {}
 
 
-# ── Seed data ─────────────────────────────────────────────────────
 def seed_data():
     fire_stations["ST-1"] = Station(
         station_id="ST-1", name="Downtown Station",
@@ -67,7 +67,6 @@ def seed_data():
     fleet_units["ENG-2"] = Unit(unit_id="ENG-2", type="Engine", station_id="ST-2")
     fleet_units["LAD-1"] = Unit(unit_id="LAD-1", type="Ladder", station_id="ST-2")
 
-    # FIX: extra ambulance so Medical incidents always have a unit available
     fire_stations["ST-3"] = Station(
         station_id="ST-3", name="Midtown Station",
         location=Location(lat=40.7549, lng=-73.9840),
@@ -80,7 +79,6 @@ def seed_data():
 seed_data()
 
 
-# ── Endpoints ─────────────────────────────────────────────────────
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
@@ -100,6 +98,11 @@ def get_system_status():
     }
 
 
+@app.get("/calc/{incident_id}")
+def get_calc(incident_id: str):
+    return {"steps": calc_log.get(incident_id, [])}
+
+
 @app.post("/incidents/")
 async def report_incident(incident_type: str, lat: float, lng: float):
     incident_id   = f"INC-{uuid.uuid4().hex[:6].upper()}"
@@ -116,19 +119,20 @@ async def report_incident(incident_type: str, lat: float, lng: float):
         reported_time=reported_time,
     )
 
-    assigned_details = optimize_dispatch(new_incident, fleet_units, fire_stations)
+    assigned_details, calc_steps = optimize_dispatch(new_incident, fleet_units, fire_stations)
 
     new_incident.assigned_units   = [d["unit_id"] for d in assigned_details]
     new_incident.dispatch_details = assigned_details
     new_incident.status           = "Dispatched" if assigned_details else "Pending"
 
     active_incidents[incident_id] = new_incident
+    calc_log[incident_id]         = calc_steps
 
     await manager.broadcast(json.dumps({
         "type": "NEW_INCIDENT",
         "incident_id": incident_id,
     }))
-    return {"message": "Processed", "incident": new_incident.model_dump()}
+    return {"message": "Processed", "incident": new_incident.model_dump(), "calc": calc_steps}
 
 
 @app.post("/incidents/{incident_id}/resolve")
@@ -139,12 +143,11 @@ async def resolve_incident(incident_id: str):
     incident = active_incidents[incident_id]
     incident.status = "Resolved"
 
-    # FIX: reset ALL assigned units back to Available
-    # Previously only reset units still in fleet_units — now also catches
-    # units that were marked Dispatched and need to return to standby.
     for unit_id in incident.assigned_units:
         if unit_id in fleet_units:
             fleet_units[unit_id].status = "Available"
+
+    calc_log.pop(incident_id, None)
 
     await manager.broadcast(json.dumps({
         "type": "INCIDENT_RESOLVED",
@@ -155,5 +158,4 @@ async def resolve_incident(incident_id: str):
 
 @app.get("/units")
 def get_units():
-    """Quick endpoint to check unit statuses during debugging."""
     return [u.model_dump() for u in fleet_units.values()]
