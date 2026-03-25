@@ -52,29 +52,28 @@ calc_log:         dict[str, list]     = {}
 
 def seed_data():
     fire_stations["ST-1"] = Station(
-        station_id="ST-1", name="Downtown Station",
-        location=Location(lat=40.7128, lng=-74.0060),
+        station_id="ST-1", name="Civil Lines Station",
+        location=Location(lat=26.9260, lng=75.8235),
         units=["ENG-1", "MED-1"],
     )
     fleet_units["ENG-1"] = Unit(unit_id="ENG-1", type="Engine",    station_id="ST-1")
     fleet_units["MED-1"] = Unit(unit_id="MED-1", type="Ambulance", station_id="ST-1")
 
     fire_stations["ST-2"] = Station(
-        station_id="ST-2", name="Uptown Station",
-        location=Location(lat=40.7306, lng=-73.9866),
+        station_id="ST-2", name="Vaishali Nagar Station",
+        location=Location(lat=26.9124, lng=75.7373),
         units=["ENG-2", "LAD-1"],
     )
     fleet_units["ENG-2"] = Unit(unit_id="ENG-2", type="Engine", station_id="ST-2")
     fleet_units["LAD-1"] = Unit(unit_id="LAD-1", type="Ladder", station_id="ST-2")
 
     fire_stations["ST-3"] = Station(
-        station_id="ST-3", name="Midtown Station",
-        location=Location(lat=40.7549, lng=-73.9840),
+        station_id="ST-3", name="Mansarovar Station",
+        location=Location(lat=26.8535, lng=75.7726),
         units=["MED-2", "ENG-3"],
     )
     fleet_units["MED-2"] = Unit(unit_id="MED-2", type="Ambulance", station_id="ST-3")
     fleet_units["ENG-3"] = Unit(unit_id="ENG-3", type="Engine",    station_id="ST-3")
-
 
 seed_data()
 

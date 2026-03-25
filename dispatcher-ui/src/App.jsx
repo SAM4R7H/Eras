@@ -22,11 +22,12 @@ function makeStationIcon() {
   });
 }
 
-function makeIncidentIcon(priority) {
+function makeIncidentIcon(priority, isSelected) {
   const colors = { P1: '#ff3a5c', P2: '#ffaa00', P3: '#00d4ff', P4: '#5a7a90' };
-  const col = colors[priority] || '#ff3a5c';
+  const col  = colors[priority] || '#ff3a5c';
+  const ring = isSelected ? `outline:3px solid ${col};outline-offset:4px;` : '';
   return L.divIcon({
-    html: `<div style="padding:4px 8px;background:#070b14;border:1.5px solid ${col};border-radius:4px;font-size:10px;font-weight:700;color:${col};font-family:monospace;letter-spacing:.5px;box-shadow:0 0 10px ${col}66;white-space:nowrap;animation:fadeIn .3s ease">${priority} ⚠</div>`,
+    html: `<div style="padding:4px 8px;background:#070b14;border:1.5px solid ${col};border-radius:4px;font-size:10px;font-weight:700;color:${col};font-family:monospace;letter-spacing:.5px;box-shadow:0 0 ${isSelected ? '20px' : '10px'} ${col}${isSelected ? 'cc' : '66'};white-space:nowrap;animation:fadeIn .3s ease;${ring}">${priority} ⚠${isSelected ? ' ◉' : ''}</div>`,
     className: '', iconSize: [null, null], iconAnchor: [0, 0],
   });
 }
@@ -52,69 +53,112 @@ function makeVehicleIcon(unitType, progress) {
 }
 
 // ── Moving vehicle component ─────────────────────────────────────
+// ── Moving vehicle component ─────────────────────────────────────
 function MovingVehicle({ detail, incidentId }) {
-  const map      = useMap();
-  const markerRef = useRef(null);
-  const rafRef   = useRef(null);
-  const startRef = useRef(null);
+  const map         = useMap();
+  const markerRef   = useRef(null);
+  const rafRef      = useRef(null);
+  const progressRef = useRef(0);       // survives re-renders
+  const startRef    = useRef(null);    // adjusted start time
 
   useEffect(() => {
     const route = detail?.route_shape;
     if (!route || route.length < 2) return;
 
-    // Precompute cumulative distances along route
+    // Precompute cumulative distances
     const segDists = [];
     let totalDist  = 0;
     for (let i = 0; i < route.length - 1; i++) {
-      const d = Math.hypot(route[i+1][0]-route[i][0], route[i+1][1]-route[i][1]);
+      const d = Math.hypot(
+        route[i+1][0] - route[i][0],
+        route[i+1][1] - route[i][1]
+      );
       segDists.push(d);
       totalDist += d;
     }
 
-    // Duration: use OSRM estimate if available, else 30s for demo
-    const durationMs = detail.duration_s ? Math.min(detail.duration_s * 1000 * 0.15, 45000) : 30000;
+    const durationMs = Math.min(
+      (detail.duration_s || 120) * 1000 * 0.12,
+      40000
+    );
 
-    const marker = L.marker(route[0], { icon: makeVehicleIcon(detail.unit_type, 0), zIndexOffset: 1000 }).addTo(map);
-    markerRef.current = marker;
-    startRef.current  = performance.now();
+    // If already completed, place at destination and stop
+    if (progressRef.current >= 1.0) {
+      if (!markerRef.current) {
+        markerRef.current = L.marker(route[route.length - 1], {
+          icon: makeVehicleIcon(detail.unit_type, 1.0),
+          zIndexOffset: 1000,
+        }).addTo(map);
+      }
+      return;
+    }
+
+    // Create marker at current progress position if not yet created
+    if (!markerRef.current) {
+      markerRef.current = L.marker(route[0], {
+        icon: makeVehicleIcon(detail.unit_type, progressRef.current),
+        zIndexOffset: 1000,
+      }).addTo(map);
+    }
+
+    // Adjust start time so animation continues from current progress
+    // instead of restarting from 0
+    startRef.current = performance.now() - (progressRef.current * durationMs);
 
     const animate = (now) => {
       const elapsed  = now - startRef.current;
       const progress = Math.min(elapsed / durationMs, 1.0);
-      const target   = progress * totalDist;
+      progressRef.current = progress;
 
-      let cum = 0;
-      let placed = false;
+      const target = progress * totalDist;
+      let cum      = 0;
+      let placed   = false;
+
       for (let i = 0; i < segDists.length; i++) {
         if (cum + segDists[i] >= target) {
           const t   = segDists[i] > 0 ? (target - cum) / segDists[i] : 0;
           const lat = route[i][0] + (route[i+1][0] - route[i][0]) * t;
           const lng = route[i][1] + (route[i+1][1] - route[i][1]) * t;
-          marker.setLatLng([lat, lng]);
-          marker.setIcon(makeVehicleIcon(detail.unit_type, progress));
+          if (markerRef.current) {
+            markerRef.current.setLatLng([lat, lng]);
+            markerRef.current.setIcon(makeVehicleIcon(detail.unit_type, progress));
+          }
           placed = true;
           break;
         }
         cum += segDists[i];
       }
 
-      if (!placed) {
-        marker.setLatLng(route[route.length - 1]);
-        marker.setIcon(makeVehicleIcon(detail.unit_type, 1));
+      if (!placed && markerRef.current) {
+        markerRef.current.setLatLng(route[route.length - 1]);
+        markerRef.current.setIcon(makeVehicleIcon(detail.unit_type, 1.0));
       }
 
       if (progress < 1.0) {
         rafRef.current = requestAnimationFrame(animate);
       }
+      // When complete: marker stays at destination, no cleanup
     };
 
     rafRef.current = requestAnimationFrame(animate);
 
+    // Cleanup: cancel RAF but DO NOT remove marker or reset progress
+    // This way re-renders just resume from where we left off
     return () => {
-      if (rafRef.current)  cancelAnimationFrame(rafRef.current);
-      if (markerRef.current) markerRef.current.remove();
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
   }, [detail, map]);
+
+  // On unmount (incident resolved): remove marker and reset
+  useEffect(() => {
+    return () => {
+      if (markerRef.current) {
+        markerRef.current.remove();
+        markerRef.current = null;
+      }
+      progressRef.current = 0;
+    };
+  }, []);
 
   return null;
 }
@@ -264,6 +308,24 @@ function CalcPanel({ selectedInc }) {
 }
 
 // ── Main App ─────────────────────────────────────────────────────
+
+// ── Map controller — flies to selected incident ──────────────────
+function MapController({ selected }) {
+  const map = useMap();
+  useEffect(() => {
+    if (selected?.location) {
+      map.flyTo(
+        [selected.location.lat, selected.location.lng],
+        15,
+        { animate: true, duration: 1.2 }
+      );
+    }
+  }, [selected, map]);
+  return null;
+}
+
+// ── Main App ─────────────────────────────────────────────────────
+
 export default function App() {
   const [incidents, setIncidents] = useState([]);
   const [stations,  setStations]  = useState([]);
@@ -320,7 +382,7 @@ export default function App() {
       <div className="topbar">
         <div>
           <div className="logo">Eras</div>
-          <div className="logo-sub">Emergency Dispatch · NYC Grid</div>
+          <div className="logo-sub">Emergency Dispatch · Jaipur Grid</div>
         </div>
         <div className="live-indicator">
           <div className="live-dot" />
@@ -440,7 +502,7 @@ export default function App() {
           <CalcPanel selectedInc={selected} />
 
           <MapContainer
-            center={[40.7200, -73.9900]}
+            center={[26.9124, 75.7873]}
             zoom={13}
             style={{ height: '100%', width: '100%' }}
             zoomControl={false}
@@ -450,6 +512,7 @@ export default function App() {
               attribution='© OpenStreetMap © CARTO'
               maxZoom={19}
             />
+            <MapController selected={selected} />
 
             {/* Station markers */}
             {stations.map(s => (
@@ -471,7 +534,8 @@ export default function App() {
                   key={`inc-${inc.incident_id}`}
                   position={[inc.location.lat, inc.location.lng]}
                   icon={makeIncidentIcon(
-                    inc.priority >= 80 ? 'P1' : inc.priority >= 60 ? 'P2' : 'P3'
+                    inc.priority >= 80 ? 'P1' : inc.priority >= 60 ? 'P2' : 'P3',
+                    selected?.incident_id === inc.incident_id
                   )}
                 >
                   <Popup>

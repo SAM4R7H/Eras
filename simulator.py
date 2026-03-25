@@ -7,8 +7,8 @@ API_URL = "http://127.0.0.1:8000/incidents/"
 RESOLVE_URL = "http://127.0.0.1:8000/incidents/{}/resolve"
 
 INCIDENT_TYPES = ["Medical", "Fire", "Traffic Collision", "Rescue", "Hazmat"]
-LAT_MIN, LAT_MAX = 40.7000, 40.7400
-LNG_MIN, LNG_MAX = -74.0200, -73.9700
+LAT_MIN, LAT_MAX = 26.8700, 26.9500
+LNG_MIN, LNG_MAX = 75.7400, 75.8600
 
 active_incident_ids = []
 
