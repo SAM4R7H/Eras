@@ -48,6 +48,7 @@ fleet_units:      dict[str, Unit]     = {}
 fire_stations:    dict[str, Station]  = {}
 # Store calc steps per incident for the AI panel
 calc_log:         dict[str, list]     = {}
+audit_log_db:     list[dict]          = []  # <--- NEW: Permanent history
 
 
 def seed_data():
@@ -56,24 +57,24 @@ def seed_data():
         location=Location(lat=26.9260, lng=75.8235),
         units=["ENG-1", "MED-1"],
     )
-    fleet_units["ENG-1"] = Unit(unit_id="ENG-1", type="Engine",    station_id="ST-1")
-    fleet_units["MED-1"] = Unit(unit_id="MED-1", type="Ambulance", station_id="ST-1")
+    fleet_units["ENG-1"] = Unit(unit_id="ENG-1", type="Engine", station_id="ST-1", capability="Heavy Rescue")
+    fleet_units["MED-1"] = Unit(unit_id="MED-1", type="Ambulance", station_id="ST-1", capability="ALS")
 
     fire_stations["ST-2"] = Station(
         station_id="ST-2", name="Vaishali Nagar Station",
         location=Location(lat=26.9124, lng=75.7373),
         units=["ENG-2", "LAD-1"],
     )
-    fleet_units["ENG-2"] = Unit(unit_id="ENG-2", type="Engine", station_id="ST-2")
-    fleet_units["LAD-1"] = Unit(unit_id="LAD-1", type="Ladder", station_id="ST-2")
+    fleet_units["ENG-2"] = Unit(unit_id="ENG-2", type="Engine", station_id="ST-2", capability="Standard")
+    fleet_units["LAD-1"] = Unit(unit_id="LAD-1", type="Ladder", station_id="ST-2", capability="Standard")
 
     fire_stations["ST-3"] = Station(
         station_id="ST-3", name="Mansarovar Station",
         location=Location(lat=26.8535, lng=75.7726),
         units=["MED-2", "ENG-3"],
     )
-    fleet_units["MED-2"] = Unit(unit_id="MED-2", type="Ambulance", station_id="ST-3")
-    fleet_units["ENG-3"] = Unit(unit_id="ENG-3", type="Engine",    station_id="ST-3")
+    fleet_units["MED-2"] = Unit(unit_id="MED-2", type="Ambulance", station_id="ST-3", capability="BLS")
+    fleet_units["ENG-3"] = Unit(unit_id="ENG-3", type="Engine", station_id="ST-3", capability="Standard")
 
 seed_data()
 
@@ -107,13 +108,15 @@ async def report_incident(incident_type: str, lat: float, lng: float):
     incident_id   = f"INC-{uuid.uuid4().hex[:6].upper()}"
     reported_time = datetime.now()
 
-    priority_score, units_needed = evaluate_incident(incident_type, reported_time)
+    # UNPACK THE 3rd VARIABLE HERE
+    priority_score, units_needed, preferred_caps = evaluate_incident(incident_type, reported_time)
 
     new_incident = Incident(
         incident_id=incident_id,
         type=incident_type,
         priority=priority_score,
         required_units=units_needed,
+        preferred_capabilities=preferred_caps, # PASS IT TO INCIDENT HERE
         location=Location(lat=lat, lng=lng),
         reported_time=reported_time,
     )
@@ -148,11 +151,30 @@ async def resolve_incident(incident_id: str):
 
     calc_log.pop(incident_id, None)
 
+    # --- NEW: SAVE TO AUDIT LOG ---
+    resolved_time = datetime.now()
+    duration_mins = round((resolved_time - incident.reported_time).total_seconds() / 60, 2)
+    
+    audit_log_db.append({
+        "incident_id": incident.incident_id,
+        "type": incident.type,
+        "priority": incident.priority,
+        "units": incident.assigned_units,
+        "duration_mins": duration_mins,
+        "reported_at": incident.reported_time.strftime("%H:%M:%S")
+    })
+    # ------------------------------
+
     await manager.broadcast(json.dumps({
         "type": "INCIDENT_RESOLVED",
         "incident_id": incident_id,
     }))
     return {"message": "Resolved", "incident": incident.model_dump()}
+
+# --- NEW ENDPOINT FOR THE FRONTEND ---
+@app.get("/audit-log")
+def get_audit_log():
+    return {"log": audit_log_db[::-1]} # Return newest first
 
 @app.post("/incidents/{incident_id}/on-scene")
 async def mark_on_scene(incident_id: str):
@@ -197,3 +219,30 @@ async def mark_transporting(incident_id: str):
 @app.get("/units")
 def get_units():
     return [u.model_dump() for u in fleet_units.values()]
+
+from datetime import timedelta
+import random
+
+@app.get("/forecast")
+async def get_demand_forecast():
+    # Generate 6 time buckets (15 min intervals for the next 90 mins)
+    now = datetime.now()
+    data = []
+    
+    # Base our forecast roughly on current active incidents
+    base_engine = sum(1 for inc in active_incidents.values() if "Engine" in inc.required_units)
+    base_med = sum(1 for inc in active_incidents.values() if "Ambulance" in inc.required_units)
+    
+    for i in range(6):
+        time_label = (now + timedelta(minutes=15 * (i+1))).strftime("%H:%M")
+        
+        # Add a slight randomized trend curve to simulate AI predictions
+        trend = random.choice([-1, 0, 1, 2])
+        
+        data.append({
+            "time": time_label,
+            "Engines": max(0, base_engine + trend + random.randint(0, 2)),
+            "Ambulances": max(0, base_med + trend + random.randint(0, 2))
+        })
+        
+    return {"forecast": data}

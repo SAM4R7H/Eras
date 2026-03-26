@@ -1,4 +1,3 @@
-
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
@@ -9,10 +8,11 @@ class Location(BaseModel):
 
 class Unit(BaseModel):
     unit_id: str
-    type: str  # e.g., "Engine", "Ambulance", "Ladder"
+    type: str  
     station_id: str
     status: str = "Available"
     location: Optional[Location] = None
+    capability: str = "Standard"  # <--- NEW: e.g., ALS, BLS, Heavy Rescue
 
 class Station(BaseModel):
     station_id: str
@@ -28,5 +28,6 @@ class Incident(BaseModel):
     reported_time: datetime
     status: str = "Pending" 
     required_units: Optional[dict] = None 
+    preferred_capabilities: dict = {}  # <--- NEW: Tells the optimizer what we need
     assigned_units: List[str] = []
-    dispatch_details: list = []  # Holds the math & OSRM street route
+    dispatch_details: list = []

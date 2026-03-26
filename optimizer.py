@@ -34,9 +34,26 @@ def _get_route(lat1, lon1, lat2, lon2):
         straight_dist = round(calculate_distance(lat1, lon1, lat2, lon2) * 69.0, 2)
         return straight_dist, [[lat1, lon1], [lat2, lon2]], None, False
 
+def _get_cost_score(incident, unit, fire_stations):
+    # Calculates the mathematical cost for the solver
+    st = fire_stations[unit.station_id]
+    dist_deg = calculate_distance(
+        incident.location.lat, incident.location.lng,
+        st.location.lat, st.location.lng
+    )
+    cost = dist_deg * 1000
+    
+    # NEW: CAPABILITY MATCHING LOGIC
+    pref_cap = incident.preferred_capabilities
+    if unit.type in pref_cap and unit.capability == pref_cap[unit.type]:
+        cost -= 50 # Massive discount (roughly equals 3.4 miles) if it's the right capability
+        
+    return cost
 
 def _score_candidates(available_units, incident, fire_stations):
     scored = []
+    pref_cap = incident.preferred_capabilities
+    
     for u in available_units:
         st = fire_stations[u.station_id]
         dist_deg   = calculate_distance(
@@ -44,14 +61,26 @@ def _score_candidates(available_units, incident, fire_stations):
             st.location.lat, st.location.lng
         )
         dist_miles = deg_to_miles(dist_deg)
+        
+        # Calculate bonus for the UI Explanation
+        cost_score = _get_cost_score(incident, u, fire_stations)
+        match_label = ""
+        if u.type in pref_cap:
+            if u.capability == pref_cap[u.type]:
+                match_label = f" (Preferred: {u.capability})"
+            else:
+                match_label = f" (Mismatch: {u.capability})"
+        
         scored.append({
             "unit_id":    u.unit_id,
             "station":    st.name,
             "dist_deg":   round(dist_deg, 5),
             "dist_miles": dist_miles,
-            "cost_score": round(dist_deg * 1000, 3),
+            "cost_score": round(cost_score, 3),
+            "capability_note": match_label
         })
-    scored.sort(key=lambda x: x["dist_deg"])
+    # Sort by the final AI cost score, not just raw distance
+    scored.sort(key=lambda x: x["cost_score"])
     return scored
 
 
@@ -62,12 +91,10 @@ def _pick_units_ortools(available_units, count_needed, incident, fire_stations):
 
     x = {u.unit_id: solver.IntVar(0, 1, f"x_{u.unit_id}") for u in available_units}
     solver.Add(sum(x[u.unit_id] for u in available_units) == count_needed)
+    
+    # USE THE NEW COST FUNCTION
     solver.Minimize(sum(
-        calculate_distance(
-            incident.location.lat, incident.location.lng,
-            fire_stations[u.station_id].location.lat,
-            fire_stations[u.station_id].location.lng,
-        ) * x[u.unit_id]
+        _get_cost_score(incident, u, fire_stations) * x[u.unit_id]
         for u in available_units
     ))
 
@@ -84,13 +111,10 @@ def _pick_units_ortools(available_units, count_needed, incident, fire_stations):
 
 
 def _pick_units_greedy(available_units, count_needed, incident, fire_stations):
+    # Sort using our new cost score
     sorted_units = sorted(
         available_units,
-        key=lambda u: calculate_distance(
-            incident.location.lat, incident.location.lng,
-            fire_stations[u.station_id].location.lat,
-            fire_stations[u.station_id].location.lng,
-        )
+        key=lambda u: _get_cost_score(incident, u, fire_stations)
     )
     return sorted_units[:count_needed]
 

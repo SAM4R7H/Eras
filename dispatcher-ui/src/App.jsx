@@ -3,6 +3,7 @@ import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import './index.css';
+import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 
 const API = 'http://127.0.0.1:8000';
 
@@ -342,9 +343,12 @@ function CalcPanel({ selectedInc }) {
                 <div key={i}>
                   <div className="calc-divider" />
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-                    <span className="calc-step-title">Unit type</span>
-                    <span className={`unit-type-badge ut-${step.unit_type.toLowerCase()}`}>{step.unit_type}</span>
-                    <span className="calc-key" style={{ fontSize: 9 }}>need {step.needed} / avail {step.available}</span>
+                   <span className="calc-step-title">Unit type</span>
+                   <span className={`unit-type-badge ut-${step.unit_type.toLowerCase()}`}>{step.unit_type}</span>
+                   <span className="calc-key" style={{ fontSize: 9 }}>
+                    need {step.needed} / avail {step.available}
+                    {selectedInc.preferred_capabilities?.[step.unit_type] ? ` · PREFER: ${selectedInc.preferred_capabilities[step.unit_type]}` : ''}
+                   </span>
                   </div>
 
                   {step.candidates.length > 0 && (
@@ -356,7 +360,9 @@ function CalcPanel({ selectedInc }) {
                         <div key={j} className="cand-row">
                           <span className="cand-id" style={{ color: c.selected ? 'var(--cyan)' : 'var(--muted)' }}>{c.unit_id}</span>
                           <span className="cand-dist">{c.station.split(' ')[0]} · {c.dist_miles}mi</span>
-                          <span className="cand-score">{c.cost_score}</span>
+                          <span className="cand-score" style={{ color: c.capability_note?.includes('Preferred') ? 'var(--green)' : c.capability_note?.includes('Mismatch') ? 'var(--amber)' : 'var(--muted)', width: 'auto', whiteSpace: 'nowrap' }}>
+                           {c.cost_score} {c.capability_note}
+                          </span>
                           <span className="cand-sel">
                             {c.selected ? <span className="sel-tick">✓</span> : <span className="sel-cross">·</span>}
                           </span>
@@ -414,6 +420,127 @@ function CalcPanel({ selectedInc }) {
   );
 }
 
+// ── Demand Forecast Panel ────────────────────────────────────────
+function ForecastPanel() {
+  const [data, setData] = useState([]);
+  const [open, setOpen] = useState(true);
+
+  useEffect(() => {
+    const fetchForecast = () => {
+      fetch(`${API}/forecast`)
+        .then(r => r.json())
+        .then(d => setData(d.forecast))
+        .catch(() => {});
+    };
+    fetchForecast();
+    const interval = setInterval(fetchForecast, 15000); // refresh every 15s
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <div className="forecast-panel" style={{ position: 'absolute', bottom: 20, right: 20, width: 350, background: '#070b14', border: '1px solid #1a273a', borderRadius: 8, zIndex: 1000, boxShadow: '0 4px 20px rgba(0,0,0,0.5)' }}>
+      <div className="calc-hdr" onClick={() => setOpen(o => !o)} style={{ cursor: 'pointer', padding: '8px 12px', borderBottom: open ? '1px solid #1a273a' : 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ width: 7, height: 7, borderRadius: '50%', background: '#ffaa00', flexShrink: 0, boxShadow: '0 0 8px #ffaa00' }} />
+          <span style={{ fontSize: 11, fontWeight: 700, color: '#c8dff0', letterSpacing: '1px' }}>AI DEMAND FORECAST (90 MIN)</span>
+        </div>
+        <span style={{ color: '#5a7a90', fontSize: 10 }}>{open ? '▼' : '▲'}</span>
+      </div>
+
+      {open && (
+        <div style={{ padding: 12, height: 180 }}>
+          {data.length === 0 ? (
+             <div style={{ color: '#5a7a90', fontSize: 10, textAlign: 'center', marginTop: 60 }}>Loading forecast model...</div>
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={data} margin={{ top: 10, right: 0, left: -25, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="colorEng" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#ff8c42" stopOpacity={0.3}/>
+                    <stop offset="95%" stopColor="#ff8c42" stopOpacity={0}/>
+                  </linearGradient>
+                  <linearGradient id="colorAmb" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#00d4ff" stopOpacity={0.3}/>
+                    <stop offset="95%" stopColor="#00d4ff" stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
+                <XAxis dataKey="time" stroke="#5a7a90" fontSize={9} tickLine={false} axisLine={false} />
+                <YAxis stroke="#5a7a90" fontSize={9} tickLine={false} axisLine={false} />
+                <Tooltip contentStyle={{ background: '#0d1421', border: '1px solid #1a273a', fontSize: 10, borderRadius: 4, color: '#c8dff0' }} itemStyle={{ fontSize: 10 }} />
+                <Area type="monotone" dataKey="Engines" stroke="#ff8c42" fillOpacity={1} fill="url(#colorEng)" strokeWidth={2} />
+                <Area type="monotone" dataKey="Ambulances" stroke="#00d4ff" fillOpacity={1} fill="url(#colorAmb)" strokeWidth={2} />
+              </AreaChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Audit Log Modal ──────────────────────────────────────────────
+function AuditModal({ onClose }) {
+  const [logs, setLogs] = useState([]);
+
+  useEffect(() => {
+    fetch(`${API}/audit-log`)
+      .then(r => r.json())
+      .then(d => setLogs(d.log))
+      .catch(()=>{});
+  }, []);
+
+  const avgTime = logs.length 
+    ? (logs.reduce((acc, l) => acc + l.duration_mins, 0) / logs.length).toFixed(1) 
+    : 0;
+
+  return (
+    <div style={{ position: 'absolute', inset: 0, background: 'rgba(7,11,20,0.85)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', backdropFilter: 'blur(4px)' }}>
+      <div style={{ width: 650, background: '#0d1421', border: '1px solid #00d4ff', borderRadius: 8, padding: 24, boxShadow: '0 0 30px rgba(0,212,255,0.15)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #1a273a', paddingBottom: 12, marginBottom: 20 }}>
+          <h2 style={{ color: '#00d4ff', margin: 0, fontSize: 16, fontFamily: 'monospace', letterSpacing: 1 }}>POST-INCIDENT AUDIT LOG</h2>
+          <button onClick={onClose} style={{ background: 'transparent', border: 'none', color: '#ff3a5c', cursor: 'pointer', fontWeight: 'bold', fontFamily: 'monospace' }}>[X] CLOSE</button>
+        </div>
+
+        <div style={{ display: 'flex', gap: 20, marginBottom: 20 }}>
+          <div style={{ background: '#111827', padding: '12px 20px', borderRadius: 6, border: '1px solid #1a273a', flex: 1 }}>
+            <div style={{ fontSize: 10, color: '#5a7a90', marginBottom: 4, fontFamily: 'monospace' }}>TOTAL RESOLVED</div>
+            <div style={{ fontSize: 24, color: '#00e87a', fontWeight: 'bold', fontFamily: 'monospace' }}>{logs.length}</div>
+          </div>
+          <div style={{ background: '#111827', padding: '12px 20px', borderRadius: 6, border: '1px solid #1a273a', flex: 1 }}>
+            <div style={{ fontSize: 10, color: '#5a7a90', marginBottom: 4, fontFamily: 'monospace' }}>AVG CLEARANCE TIME</div>
+            <div style={{ fontSize: 24, color: '#00d4ff', fontWeight: 'bold', fontFamily: 'monospace' }}>{avgTime} min</div>
+          </div>
+        </div>
+
+        <div style={{ maxHeight: 350, overflowY: 'auto' }}>
+          {logs.length === 0 ? <div style={{ color: '#5a7a90', textAlign: 'center', padding: 40, fontFamily: 'monospace' }}>No incidents resolved yet.</div> : (
+            <table style={{ width: '100%', textAlign: 'left', fontSize: 12, borderCollapse: 'collapse', fontFamily: 'monospace' }}>
+              <thead>
+                <tr style={{ color: '#5a7a90', borderBottom: '1px solid #1a273a' }}>
+                  <th style={{ padding: 10 }}>INCIDENT ID</th>
+                  <th style={{ padding: 10 }}>TYPE</th>
+                  <th style={{ padding: 10 }}>UNITS DEPLOYED</th>
+                  <th style={{ padding: 10 }}>TIME TO RESOLVE</th>
+                </tr>
+              </thead>
+              <tbody>
+                {logs.map((l, i) => (
+                  <tr key={i} style={{ borderBottom: '1px solid rgba(26,39,58,0.5)', color: '#c8dff0' }}>
+                    <td style={{ padding: 10 }}>{l.incident_id}</td>
+                    <td style={{ padding: 10 }}>{l.type} <span style={{color: l.priority >= 80 ? '#ff3a5c' : '#ffaa00'}}>(P{l.priority >= 80 ? '1' : l.priority >= 60 ? '2' : '3'})</span></td>
+                    <td style={{ padding: 10, color: '#5a7a90' }}>{l.units.join(', ')}</td>
+                    <td style={{ padding: 10, color: '#00e87a' }}>{l.duration_mins} min</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main App ─────────────────────────────────────────────────────
 
 // ── Map controller — flies to selected incident ──────────────────
@@ -437,6 +564,7 @@ export default function App() {
   const [incidents, setIncidents] = useState([]);
   const [stations,  setStations]  = useState([]);
   const [selected,  setSelected]  = useState(null);
+  const [showAudit, setShowAudit] = useState(false); // <--- NEW STATE
 
   const fetchData = useCallback(() => {
     fetch(`${API}/system-status`)
@@ -485,6 +613,9 @@ export default function App() {
 
   return (
     <div id="root">
+      {/* --- NEW MODAL RENDER --- */}
+      {showAudit && <AuditModal onClose={() => setShowAudit(false)} />}
+
       {/* ── TOPBAR ── */}
       <div className="topbar">
         <div>
@@ -510,6 +641,14 @@ export default function App() {
             TOTAL <span className="val">{stats.total}</span>
           </div>
         </div>
+
+        {/* --- NEW BUTTON HERE --- */}
+        <button 
+          onClick={() => setShowAudit(true)} 
+          style={{ background: '#111827', border: '1px solid #00d4ff', color: '#00d4ff', padding: '6px 14px', borderRadius: 4, cursor: 'pointer', fontFamily: 'monospace', fontWeight: 'bold', fontSize: 11, letterSpacing: 1 }}
+        >
+          📄 SYSTEM AUDIT LOG
+        </button>
       </div>
 
       {/* ── MAIN ── */}
@@ -631,7 +770,7 @@ export default function App() {
           )}
 
           <CalcPanel selectedInc={selected} />
-
+          <ForecastPanel />
           <MapContainer
             center={[26.9124, 75.7873]}
             zoom={13}
