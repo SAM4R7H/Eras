@@ -117,9 +117,9 @@ def _score_candidates(
         # Apply capability-based scoring for medical incidents
         distance_modifier = 1.0
         capability_note = ""
+        unit_cap = getattr(unit, 'capability', None)
         
-        if capability_requirement and hasattr(unit, 'capability'):
-            unit_cap = getattr(unit, 'capability', 'None')
+        if capability_requirement and unit_cap:
             if capability_requirement == "ALS":
                 if unit_cap == "ALS":
                     distance_modifier = ALS_DISTANCE_DISCOUNT
@@ -140,7 +140,7 @@ def _score_candidates(
             "dist_deg": round(distance_deg, 5),
             "dist_miles": deg_to_miles(distance_deg),
             "cost_score": round(modified_distance * 1000, 3),
-            "capability": str(unit_cap) if hasattr(unit, 'capability') else "None",
+            "capability": str(unit_cap) if unit_cap else "None",
             "capability_note": capability_note,
         })
     
