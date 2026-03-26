@@ -54,7 +54,7 @@ function makeVehicleIcon(unitType, progress) {
 }
 
 // ── Moving vehicle component ─────────────────────────────────────
-function MovingVehicle({ detail, incidentId }) {
+function MovingVehicle({ detail, incidentId, incidentStatus }) {
   const map         = useMap();
   const markerRef   = useRef(null);
   const rafRef      = useRef(null);
@@ -116,12 +116,16 @@ function MovingVehicle({ detail, incidentId }) {
           markerRef.current.setIcon(makeVehicleIcon(detail.unit_type, 1.0));
         }
         
-        // Ping the backend the exact millisecond we arrive
         if (!arrivedRef.current) {
           arrivedRef.current = true;
-          fetch(`${API}/incidents/${incidentId}/on-scene`, { method: 'POST' }).catch(() => {});
+          // NEW: Smart routing ping
+          if (incidentStatus === 'Dispatched') {
+            fetch(`${API}/incidents/${incidentId}/on-scene`, { method: 'POST' }).catch(() => {});
+          } else if (incidentStatus === 'Returning') {
+            fetch(`${API}/incidents/${incidentId}/resolve`, { method: 'POST' }).catch(() => {});
+          }
         }
-        return; // Stop animation loop completely
+        return; 
       }
 
       // Still moving...
@@ -220,7 +224,7 @@ function GoldenHourTimer({ reportedTime }) {
 // ── Full Lifecycle Tracker Component ──────────────────────────────
 function StatusTimeline({ status }) {
   // The 4 major phases of our emergency response
-  const steps = ['Dispatched', 'On Scene', 'Transporting', 'Resolved'];
+  const steps = ['Dispatched', 'On Scene', 'Transporting', 'Returning'];
   
   // Find where we are in the process
   let currentIndex = steps.indexOf(status);
@@ -716,7 +720,7 @@ export default function App() {
                   <StatusTimeline status={inc.status} />
                 )}
 
-                {/* --- NEW: Dynamic Lifecycle Buttons --- */}
+                {/* --- DYNAMIC LIFECYCLE BUTTONS --- */}
                 {inc.status === 'Dispatched' && (
                   <button className="res-btn" style={{ background: '#333', color: '#888', cursor: 'not-allowed' }} disabled>
                     Driving to Scene...
@@ -726,15 +730,26 @@ export default function App() {
                 {inc.status === 'On Scene' && (
                   <button className="res-btn" style={{ background: '#ffaa00', color: '#000' }} onClick={(e) => {
                     e.stopPropagation();
-                    fetch(`${API}/incidents/${inc.incident_id}/transport`, { method: 'POST' }).then(()=>fetchData());
+                    fetch(`${API}/incidents/${inc.incident_id}/transport`, { method: 'POST' });
                   }}>
                     🚑 Begin Transport / Return
                   </button>
                 )}
 
+                {/* NEW RETURN BUTTON */}
                 {inc.status === 'Transporting' && (
-                  <button className="res-btn" onClick={(e) => handleResolve(inc.incident_id, e)}>
-                    ✅ Clear Scene & Free Units
+                  <button className="res-btn" style={{ background: 'transparent', color: '#7b2fff', borderColor: '#7b2fff' }} onClick={(e) => {
+                    e.stopPropagation();
+                    fetch(`${API}/incidents/${inc.incident_id}/return`, { method: 'POST' });
+                  }}>
+                    🔄 Route Back to Station
+                  </button>
+                )}
+
+                {/* NEW RETURNING STATE */}
+                {inc.status === 'Returning' && (
+                  <button className="res-btn" style={{ background: '#333', color: '#888', cursor: 'not-allowed' }} disabled>
+                    Driving to Base... (Auto-Resolves)
                   </button>
                 )}
               </div>
@@ -820,20 +835,21 @@ export default function App() {
                 </Marker>
 
                 {inc.dispatch_details?.map(detail => (
-                  <>
+                  <div key={`wrap-${inc.incident_id}-${detail.unit_id}`}>
                     <SafePolyline
-                      key={`route-${inc.incident_id}-${detail.unit_id}`}
+                      key={`route-${inc.incident_id}-${detail.unit_id}-${inc.status}`}
                       detail={detail}
                       incId={inc.incident_id}
                     />
-                    {inc.status === 'Dispatched' && (
+                    {(inc.status === 'Dispatched' || inc.status === 'Returning') && (
                       <MovingVehicle
-                        key={`veh-${inc.incident_id}-${detail.unit_id}`}
+                        key={`veh-${inc.incident_id}-${detail.unit_id}-${inc.status}`}
                         detail={detail}
                         incidentId={inc.incident_id}
+                        incidentStatus={inc.status}
                       />
                     )}
-                  </>
+                  </div>
                 ))}
               </>
             ))}

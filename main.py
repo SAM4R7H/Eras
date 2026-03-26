@@ -4,7 +4,7 @@ from models import Incident, Unit, Station, Location
 import uuid
 from datetime import datetime
 from ai_engine import evaluate_incident
-from optimizer import optimize_dispatch
+from optimizer import optimize_dispatch, _get_route
 import json
 
 app = FastAPI(title="AI CAD System API")
@@ -170,6 +170,48 @@ async def resolve_incident(incident_id: str):
         "incident_id": incident_id,
     }))
     return {"message": "Resolved", "incident": incident.model_dump()}
+
+@app.post("/incidents/{incident_id}/return")
+async def return_to_base(incident_id: str):
+    """Calculates return routes to home stations for all deployed units"""
+    if incident_id not in active_incidents:
+        return {"error": "Not found"}
+
+    incident = active_incidents[incident_id]
+    incident.status = "Returning"
+
+    new_dispatch_details = []
+    
+    for unit_id in incident.assigned_units:
+        if unit_id in fleet_units:
+            unit = fleet_units[unit_id]
+            unit.status = "Returning"
+            station = fire_stations[unit.station_id]
+
+            # Ask OSRM for the route BACK to the station
+            dist_miles, route_latlng, duration_s, is_road = _get_route(
+                incident.location.lat, incident.location.lng,
+                station.location.lat, station.location.lng
+            )
+
+            new_dispatch_details.append({
+                "unit_id": unit_id,
+                "unit_type": unit.type,
+                "station_name": station.name,
+                "distance": dist_miles,
+                "duration_s": duration_s,
+                "route_shape": route_latlng,
+                "is_road_route": is_road,
+            })
+
+    # Overwrite the routes with the return trips
+    incident.dispatch_details = new_dispatch_details
+
+    await manager.broadcast(json.dumps({
+        "type": "STATUS_UPDATE",
+        "incident_id": incident_id,
+    }))
+    return {"message": "Returning to base", "incident": incident.model_dump()}
 
 # --- NEW ENDPOINT FOR THE FRONTEND ---
 @app.get("/audit-log")
