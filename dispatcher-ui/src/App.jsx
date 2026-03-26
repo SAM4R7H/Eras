@@ -53,13 +53,13 @@ function makeVehicleIcon(unitType, progress) {
 }
 
 // ── Moving vehicle component ─────────────────────────────────────
-// ── Moving vehicle component ─────────────────────────────────────
 function MovingVehicle({ detail, incidentId }) {
   const map         = useMap();
   const markerRef   = useRef(null);
   const rafRef      = useRef(null);
-  const progressRef = useRef(0);       // survives re-renders
-  const startRef    = useRef(null);    // adjusted start time
+  const progressRef = useRef(0);
+  const startRef    = useRef(null);
+  const arrivedRef  = useRef(false);
 
   useEffect(() => {
     const route = detail?.route_shape;
@@ -101,8 +101,6 @@ function MovingVehicle({ detail, incidentId }) {
       }).addTo(map);
     }
 
-    // Adjust start time so animation continues from current progress
-    // instead of restarting from 0
     startRef.current = performance.now() - (progressRef.current * durationMs);
 
     const animate = (now) => {
@@ -110,9 +108,24 @@ function MovingVehicle({ detail, incidentId }) {
       const progress = Math.min(elapsed / durationMs, 1.0);
       progressRef.current = progress;
 
+      // --- FIXED LOGIC: Explicitly check for 100% arrival ---
+      if (progress >= 1.0) {
+        if (markerRef.current) {
+          markerRef.current.setLatLng(route[route.length - 1]);
+          markerRef.current.setIcon(makeVehicleIcon(detail.unit_type, 1.0));
+        }
+        
+        // Ping the backend the exact millisecond we arrive
+        if (!arrivedRef.current) {
+          arrivedRef.current = true;
+          fetch(`${API}/incidents/${incidentId}/on-scene`, { method: 'POST' }).catch(() => {});
+        }
+        return; // Stop animation loop completely
+      }
+
+      // Still moving...
       const target = progress * totalDist;
       let cum      = 0;
-      let placed   = false;
 
       for (let i = 0; i < segDists.length; i++) {
         if (cum + segDists[i] >= target) {
@@ -123,31 +136,20 @@ function MovingVehicle({ detail, incidentId }) {
             markerRef.current.setLatLng([lat, lng]);
             markerRef.current.setIcon(makeVehicleIcon(detail.unit_type, progress));
           }
-          placed = true;
           break;
         }
         cum += segDists[i];
       }
 
-      if (!placed && markerRef.current) {
-        markerRef.current.setLatLng(route[route.length - 1]);
-        markerRef.current.setIcon(makeVehicleIcon(detail.unit_type, 1.0));
-      }
-
-      if (progress < 1.0) {
-        rafRef.current = requestAnimationFrame(animate);
-      }
-      // When complete: marker stays at destination, no cleanup
+      rafRef.current = requestAnimationFrame(animate);
     };
 
     rafRef.current = requestAnimationFrame(animate);
 
-    // Cleanup: cancel RAF but DO NOT remove marker or reset progress
-    // This way re-renders just resume from where we left off
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
-  }, [detail, map]);
+  }, [detail, map, incidentId]);
 
   // On unmount (incident resolved): remove marker and reset
   useEffect(() => {
@@ -161,6 +163,104 @@ function MovingVehicle({ detail, incidentId }) {
   }, []);
 
   return null;
+}
+
+// ── Golden Hour Timer Component ──────────────────────────────────
+function GoldenHourTimer({ reportedTime }) {
+  const [timeLeft, setTimeLeft] = useState('');
+  const [urgency, setUrgency]   = useState('#00d4ff'); // default cyan
+  const [blink, setBlink]       = useState(false);
+
+  useEffect(() => {
+    if (!reportedTime) return;
+    const startTime = new Date(reportedTime).getTime();
+    const goldenHourMs = 60 * 60 * 1000; // 60 minutes
+
+    const interval = setInterval(() => {
+      const now = new Date().getTime();
+      const elapsed = now - startTime;
+      const remaining = goldenHourMs - elapsed;
+
+      if (remaining <= 0) {
+        setTimeLeft('00:00');
+        setUrgency('#ff3a5c');
+        setBlink(true);
+        clearInterval(interval);
+        return;
+      }
+
+      const m = Math.floor(remaining / 60000);
+      const s = Math.floor((remaining % 60000) / 1000);
+      setTimeLeft(`${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`);
+
+      if (m < 15) { setUrgency('#ffaa00'); setBlink(false); } // Amber under 15m
+      if (m < 5)  { setUrgency('#ff3a5c'); setBlink(true); }  // Red/Blink under 5m
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [reportedTime]);
+
+  if (!timeLeft) return null;
+
+  return (
+    <span style={{ 
+      marginLeft: '8px', padding: '2px 6px', borderRadius: '4px', 
+      fontSize: '10px', fontFamily: 'monospace', fontWeight: 'bold',
+      color: urgency, border: `1px solid ${urgency}`,
+      animation: blink ? 'pulse 1s infinite' : 'none',
+      boxShadow: blink ? `0 0 8px ${urgency}66` : 'none'
+    }}>
+      <style>{`@keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }`}</style>
+      ⏱ {timeLeft}
+    </span>
+  );
+}
+
+// ── Full Lifecycle Tracker Component ──────────────────────────────
+function StatusTimeline({ status }) {
+  // The 4 major phases of our emergency response
+  const steps = ['Dispatched', 'On Scene', 'Transporting', 'Resolved'];
+  
+  // Find where we are in the process
+  let currentIndex = steps.indexOf(status);
+  if (currentIndex === -1) currentIndex = 0; // Fallback to start
+
+  return (
+    <div style={{ position: 'relative', margin: '15px 0 10px 0', padding: '0 10px' }}>
+      {/* The background connecting line */}
+      <div style={{ position: 'absolute', top: '4px', left: '10%', right: '10%', height: '2px', background: '#333', zIndex: 0 }} />
+      
+      <div style={{ display: 'flex', justifyContent: 'space-between', position: 'relative', zIndex: 1 }}>
+        {steps.map((step, idx) => {
+          const isCompleted = idx < currentIndex;
+          const isActive = idx === currentIndex;
+          
+          // Determine colors based on status
+          let dotColor = '#222'; // Pending (Dark grey)
+          if (isCompleted) dotColor = '#4CAF50'; // Done (Green)
+          if (isActive) dotColor = '#00d4ff'; // Current (Cyan)
+
+          return (
+            <div key={step} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '25%' }}>
+              <div style={{ 
+                width: '10px', height: '10px', borderRadius: '50%', 
+                background: dotColor,
+                boxShadow: isActive ? `0 0 10px ${dotColor}` : 'none',
+                border: '2px solid #070b14', transition: 'all 0.3s ease'
+              }} />
+              <div style={{ 
+                fontSize: '8px', marginTop: '6px', fontFamily: 'monospace', textAlign: 'center',
+                color: (isActive || isCompleted) ? '#c8dff0' : '#555',
+                fontWeight: isActive ? 'bold' : 'normal'
+              }}>
+                {step}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 // ── Safe polyline ────────────────────────────────────────────────
@@ -196,7 +296,14 @@ function CalcPanel({ selectedInc }) {
       <div className="calc-hdr" onClick={() => setOpen(o => !o)}>
         <div style={{ width: 7, height: 7, borderRadius: '50%', background: calcData?.length ? '#00d4ff' : '#5a7a90', flexShrink: 0 }} />
         <span className="calc-hdr-title">AI Dispatch Calculations</span>
-        <span className="calc-toggle">{open ? '▲' : '▼'}</span>
+        <span className="calc-togif (!placed && markerRef.current) {
+        markerRef.current.setLatLng(route[route.length - 1]);
+        markerRef.current.setIcon(makeVehicleIcon(detail.unit_type, 1.0));
+      }
+
+      if (progress < 1.0) {
+        rafRef.current = requestAnimationFrame(animate);
+      }gle">{open ? '▲' : '▼'}</span>
       </div>
 
       {open && (
@@ -437,11 +544,17 @@ export default function App() {
                   <span className={`pri-badge ${inc.priority >= 80 ? 'p1' : inc.priority >= 60 ? 'p2' : 'p3'}`}>
                     P{inc.priority >= 80 ? '1' : inc.priority >= 60 ? '2' : '3'} · {inc.priority}
                   </span>
+                  
+                  {/* --- NEW: Golden Hour Timer for Critical Incidents --- */}
+                  {inc.priority >= 80 && inc.status !== 'Resolved' && (
+                    <GoldenHourTimer reportedTime={inc.reported_time} />
+                  )}
+
                   {inc.dispatch_details?.some(d => d.is_road_route) && (
-                    <span className="route-badge route-road">ROAD</span>
+                    <span className="route-badge route-road" style={{marginLeft: 'auto'}}>ROAD</span>
                   )}
                   {inc.dispatch_details?.length > 0 && !inc.dispatch_details.some(d => d.is_road_route) && (
-                    <span className="route-badge route-straight">FALLBACK</span>
+                    <span className="route-badge route-straight" style={{marginLeft: 'auto'}}>FALLBACK</span>
                   )}
                 </div>
 
@@ -451,9 +564,6 @@ export default function App() {
                 </div>
 
                 <div className="inc-tags">
-                  <span className="tag">
-                    {inc.status === 'Dispatched' ? '🟢' : '🟡'} {inc.status}
-                  </span>
                   {inc.assigned_units?.length > 0 && (
                     <span className="tag">{inc.assigned_units.length} unit{inc.assigned_units.length > 1 ? 's' : ''}</span>
                   )}
@@ -462,9 +572,30 @@ export default function App() {
                   ))}
                 </div>
 
+                {/* --- NEW: Visual Status Tracker --- */}
                 {inc.status !== 'Resolved' && (
+                  <StatusTimeline status={inc.status} />
+                )}
+
+                {/* --- NEW: Dynamic Lifecycle Buttons --- */}
+                {inc.status === 'Dispatched' && (
+                  <button className="res-btn" style={{ background: '#333', color: '#888', cursor: 'not-allowed' }} disabled>
+                    Driving to Scene...
+                  </button>
+                )}
+                
+                {inc.status === 'On Scene' && (
+                  <button className="res-btn" style={{ background: '#ffaa00', color: '#000' }} onClick={(e) => {
+                    e.stopPropagation();
+                    fetch(`${API}/incidents/${inc.incident_id}/transport`, { method: 'POST' }).then(()=>fetchData());
+                  }}>
+                    🚑 Begin Transport / Return
+                  </button>
+                )}
+
+                {inc.status === 'Transporting' && (
                   <button className="res-btn" onClick={(e) => handleResolve(inc.incident_id, e)}>
-                    ✓ Resolve Incident
+                    ✅ Clear Scene & Free Units
                   </button>
                 )}
               </div>

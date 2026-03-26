@@ -154,6 +154,45 @@ async def resolve_incident(incident_id: str):
     }))
     return {"message": "Resolved", "incident": incident.model_dump()}
 
+@app.post("/incidents/{incident_id}/on-scene")
+async def mark_on_scene(incident_id: str):
+    """Automatically triggered when the frontend vehicle animation finishes driving"""
+    if incident_id not in active_incidents:
+        return {"error": "Incident not found"}
+    
+    incident = active_incidents[incident_id]
+    
+    # Only update if it's currently Dispatched to avoid overwriting a Resolved status
+    if incident.status == "Dispatched":
+        incident.status = "On Scene"
+        
+        # Update the specific units
+        for unit_id in incident.assigned_units:
+            if unit_id in fleet_units:
+                fleet_units[unit_id].status = "On Scene"
+                
+        # Broadcast the status change to React immediately
+        await manager.broadcast(json.dumps({"type": "STATUS_UPDATE", "incident_id": incident_id}))
+        
+    return {"message": "Units on scene", "incident": incident}
+
+@app.post("/incidents/{incident_id}/transport")
+async def mark_transporting(incident_id: str):
+    """Triggered when units leave the scene to go to the hospital or return to station"""
+    if incident_id not in active_incidents:
+        return {"error": "Incident not found"}
+    
+    incident = active_incidents[incident_id]
+    
+    if incident.status == "On Scene":
+        incident.status = "Transporting"
+        for unit_id in incident.assigned_units:
+            if unit_id in fleet_units:
+                fleet_units[unit_id].status = "Transporting"
+                
+        await manager.broadcast(json.dumps({"type": "STATUS_UPDATE", "incident_id": incident_id}))
+        
+    return {"message": "Units transporting", "incident": incident}
 
 @app.get("/units")
 def get_units():
